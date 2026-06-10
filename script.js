@@ -25,13 +25,42 @@ function fmtVol(v) {
 }
 
 // ── Yahoo Finance Fetch ──
+// Detect if we're on Vercel (production) or local dev
+const IS_VERCEL = window.location.hostname.includes('vercel.app') || window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' && !window.location.hostname.includes('192.168');
+
+async function fetchFromVercelAPI(ticker, range, interval) {
+  const url = `/api/yahoo?ticker=${encodeURIComponent(ticker)}&range=${range}&interval=${interval}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Vercel API returned ${res.status}`);
+  return await res.json();
+}
+
+async function fetchFromCORSProxy(ticker, range, interval) {
+  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=${interval}&range=${range}`;
+  // Multiple CORS proxies as fallback
+  const proxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`,
+    `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(yahooUrl)}`,
+  ];
+  for (const proxy of proxies) {
+    try {
+      const res = await fetch(proxy, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) continue;
+      return await res.json();
+    } catch (e) { console.warn('Proxy failed:', proxy, e.message); }
+  }
+  throw new Error('All CORS proxies failed');
+}
+
 async function fetchOHLC(ticker, range, interval = '1d') {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=${interval}&range=${range}`;
-  const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
   try {
-    const res = await fetch(proxy);
-    if (!res.ok) throw new Error('fetch failed');
-    const json = await res.json();
+    let json;
+    if (IS_VERCEL) {
+      json = await fetchFromVercelAPI(ticker, range, interval);
+    } else {
+      json = await fetchFromCORSProxy(ticker, range, interval);
+    }
     if (!json.chart?.result?.[0]) return { data: [], volume: 0 };
     const r = json.chart.result[0];
     const ts = r.timestamp || [];
